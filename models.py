@@ -492,7 +492,7 @@ class VI_KLpq:
             tm = str(datetime.datetime.now())
             tm_str = tm[:10]+'-'+tm[11:13]+tm[14:16]+tm[17:19]
             if path is None:
-                path = 'results/' + self.dataset + '/' + f'vi_klpq_N{self.cis}_' + self.v_fam + '/' + tm_str + '/'
+                path = 'results/' + self.dataset + '/' + f'vi_klpq_N{self.cis}_{self.space}' + self.v_fam + '/' + tm_str + '/'
             else:
                 path += self.dataset + '/' + 'vi_klpq_' + self.v_fam + '/' + tm_str + '/'
             if not os.path.exists(path): 
@@ -549,6 +549,7 @@ class VI_KLpq:
                 else:
                     z = out
                 z = tf.stop_gradient(z)
+            
             else:
                 S = self.cis
 
@@ -556,25 +557,27 @@ class VI_KLpq:
                 z0_Sm1 = tfd.Sample(tfd.Normal(0,1), self.num_dims).sample((S-1) * self.chains)
                 z0_Sm1 = tf.reshape(z0_Sm1, (S-1, self.chains, -1))
                 
-                alphas = tfd.Sample(tfd.Bernoulli(probs=self.bernoulli_prob_corr * tf.ones(1))).sample(self.chains * (S-1))
+                alphas = tfd.Sample(
+                    tfd.Bernoulli(probs=self.bernoulli_prob_corr * tf.ones(1))
+                    ).sample(self.chains * (S-1))
                 alphas = self.corr_coef * tf.cast(alphas, tf.float32)
                 alphas = tf.reshape(alphas, (S-1, self.chains))
                 alphas = tf.tile(tf.expand_dims(alphas, 2), [1, 1, self.num_dims])
 
+                z0 = self.current_state
                 if self.space == 'eps' or self.space == 'warped':
-                    z0 = self.bij.inverse(self.current_state)
+                    z = self.bij.forward(self.current_state)
                 else:
-                    z0 = self.current_state
+                    z = self.current_state
 
                 alpha0 = tfd.Sample(tfd.Bernoulli(self.bernoulli_prob_corr)).sample(self.chains)
                 alpha0 = self.corr_coef * tf.cast(alpha0, tf.float32)
                 alpha0 =  tf.tile(tf.expand_dims(alpha0, 1), [1, self.num_dims])
-
-                xi = alpha0 * z0 + tfd.Sample(tfd.Normal(0,1), self.num_dims).sample(self.chains)
+                noise = tfd.Sample(tfd.Normal(0,1), self.num_dims).sample(self.chains)
+                xi = alpha0 * z0 + (1. - alpha0**2) ** .5 * noise
                 xi = tf.tile(tf.expand_dims(xi, 0), [S-1, 1, 1])
                 
-                z0_Sm1 = alphas * xi + z0_Sm1
-                
+                z0_Sm1 = alphas * xi + (1. - alphas**2) ** .5 * z0_Sm1
                 z0_S = tf.concat([tf.reshape(z0, (1, self.chains, -1)), z0_Sm1], axis=0)
                 if self.space == 'eps' or self.space == 'warped':
                     zt_Sm1 = self.bij.forward(z0_Sm1)
@@ -582,8 +585,7 @@ class VI_KLpq:
                     zt_Sm1 = z0_Sm1
                 
                 # Concatenate z_Sm1 with z_k-1
-                zt_S = tf.concat([tf.reshape(self.current_state, (1, self.chains, -1)), zt_Sm1], axis=0)
-                
+                zt_S = tf.concat([tf.reshape(z, (1, self.chains, -1)), zt_Sm1], axis=0)
                 if self.space == 'eps' or self.space == 'warped':
                     zs = tf.reshape(z0_S, (self.chains * S, -1))
                     log_w = self.log_hmc_target_warped_space(zs)
@@ -597,14 +599,16 @@ class VI_KLpq:
                 J = tf.random.categorical(log_w, 1)
 
                 # Set z[k], or z of this iteration
-                zt_S = tf.reshape(zt_S, (S, -1, self.num_dims))
-
                 J = tf.tile(tf.expand_dims(J, 2), [1, self.num_dims, 1])
-                z = tf.gather_nd(params=tf.reshape(zt_S, (self.chains, -1, S)), indices=J, batch_dims=2)
-                #z0 = tf.gather_nd(params=tf.reshape(z0_S, (self.chains, -1, S)), indices=J, batch_dims=2)
+                z = tf.gather_nd(params=tf.transpose(zt_S, (1, 2, 0)), indices=J, batch_dims=2)
+                z0 = tf.gather_nd(params=tf.transpose(z0_S, (1, 2, 0)), indices=J, batch_dims=2)
 
                 if self.rejuvenation:
-                    out = tfp.mcmc.sample_chain(self.num_samp, z, 
+                    if self.space == 'warped':
+                        hmc_input = z0
+                    else:
+                        hmc_input = z
+                    out = tfp.mcmc.sample_chain(self.num_samp, hmc_input, 
                         previous_kernel_results=None, kernel=self.hmc_kernel,
                         num_burnin_steps=0, num_steps_between_results=0, 
                         trace_fn=(lambda current_state, kernel_results: kernel_results.is_accepted), 
@@ -616,12 +620,11 @@ class VI_KLpq:
                         out = tf.squeeze(out, axis=0)
                     if len(out.shape) < 2:
                         out = tf.expand_dims(out, axis=0)
-                    # if self.space == 'eps' or self.space == 'warped':
-                    #     eps = out
-                    #     z = self.bij.forward(eps)
-                    # else:
-                    #     z = out
-                    z = out
+                    if self.space == 'warped':
+                        eps = out
+                        z = self.bij.forward(eps)
+                    else:
+                        z = out
                 
                 z = tf.stop_gradient(z)
 

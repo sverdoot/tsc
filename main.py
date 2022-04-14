@@ -228,9 +228,9 @@ if args.dataset == 'survey':
 
     if args.method.lower() == 'vi_klpq':
         model = models.VI_KLpq(
-            v_fam='gaussian', 
+            v_fam=args.v_fam, 
             space=args.space, 
-            dataset='survey', 
+            dataset=args.dataset, 
             hmc_e=args.hmc_e, 
             hmc_L=args.hmc_L, 
             chains=1,
@@ -240,7 +240,7 @@ if args.dataset == 'survey':
             rejuvenation=args.rejuvenation)
         model.x = x
         model.y = y
-        model.train(lr=args.lr, epochs=int(1e4))
+        model.train(lr=args.lr, epochs=args.epochs)
 
 if args.method.lower() == 'vi_klqp':
     model = models.VI_KLqp(
