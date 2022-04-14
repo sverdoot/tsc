@@ -20,13 +20,14 @@ class VI_KLqp:
 
     def __init__(self, dataset='funnel', v_fam='gaussian', num_dims=2, 
                  num_samp=1, batch_size=5000, train_size=5000, 
-                 loc_init=[2.,5.], scale_init=[1.,1.]):
+                 loc_init=[2.,5.], scale_init=[1.,1.], cis=0):
         self.v_fam = v_fam.lower()
         self.dataset = dataset.lower()
         self.num_dims = num_dims
         self.num_samp = num_samp
         self.batch_size = batch_size
         self.train_size = train_size
+        self.cis = cis
         if self.dataset == 'funnel' or self.dataset == 'banana':
             self.num_dims = num_dims
             self.loc_init = tf.zeros(self.num_dims)
@@ -100,9 +101,10 @@ class VI_KLqp:
         term2 = self.gamma_0 # is scaler
         term3 = tf.matmul(splitted_x[1], tf.reshape(self.gamma, (5, 1))) # has shape (batch_size, 1)
         logits = term1 + term2 + term3 # has shape (batch_size, chains)
+        print(logits.shape)
         likelihoods = -tf.nn.sigmoid_cross_entropy_with_logits(
             logits=logits, 
-            labels=tf.tile(tf.expand_dims(self.y, axis=1), [1, self.num_samp]))
+            labels=tf.tile(tf.expand_dims(self.y, axis=1), [alpha.shape[0], self.num_samp]))
         return tf.reduce_sum(likelihoods, axis=0)
     
     def survey_prior_lpdf(self, alpha):
@@ -261,7 +263,7 @@ class VI_KLpq:
                  num_samp=1, chains=1, hmc_e=0.25, hmc_L=4, 
                  batch_size=5000, train_size=5000, 
                  pt_init=tf.constant([[2,10]], dtype=tf.float32), 
-                 loc_init=[2.,5.], scale_init=[1.,1.]):
+                 loc_init=[2.,5.], scale_init=[1.,1.], cis=0, corr_coef=0.95, bernoulli_prob_corr=0.5, rejuvenation=False):
         self.space = space.lower()
         self.v_fam = v_fam.lower()
         self.dataset = dataset.lower()
@@ -284,6 +286,10 @@ class VI_KLpq:
         self.train_size = train_size
         self.chains = chains
         self.num_samp = num_samp
+        self.cis = cis
+        self.corr_coef = corr_coef
+        self.bernoulli_prob_corr = bernoulli_prob_corr
+        self.rejuvenation = rejuvenation
         
         self.likelihood = self.define_likelihood()
         self.prior = self.define_prior()
@@ -367,7 +373,7 @@ class VI_KLpq:
         logits = term1 + term2 + term3 # has shape (batch_size, chains)
         likelihoods = -tf.nn.sigmoid_cross_entropy_with_logits(
             logits=logits, 
-            labels=tf.tile(tf.expand_dims(self.y, axis=1), [1, self.chains]))
+            labels=tf.tile(tf.expand_dims(self.y, axis=1), [1, alpha.shape[0]]))
         return tf.reduce_sum(likelihoods, axis=0)
     
     def survey_prior_lpdf(self, alpha):
@@ -462,8 +468,7 @@ class VI_KLpq:
                 lst[4].append(self.sigma.numpy())
         return lst
 
-    def train(self, epochs=int(1e5), lr=0.001, decay_rate=0.001, natural_gradient=False, save=True, path=None, load_path=None, load_epoch=1):
-
+    def train(self, epochs=int(1e5), lr=0.001, decay_rate=0.001, natural_gradient=False, save=True, path=None, load_path=None, load_epoch=1):    
         lr_schedule = tf.keras.optimizers.schedules.InverseTimeDecay(lr, 1, decay_rate)
         optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
         if self.dataset == 'survey' and (self.v_fam == 'iaf' or self.v_fam == 'flow'):
@@ -487,7 +492,7 @@ class VI_KLpq:
             tm = str(datetime.datetime.now())
             tm_str = tm[:10]+'-'+tm[11:13]+tm[14:16]+tm[17:19]
             if path is None:
-                path = 'results/' + self.dataset + '/' + 'vi_klpq_' + self.v_fam + '/' + tm_str + '/'
+                path = 'results/' + self.dataset + '/' + f'vi_klpq_N{self.cis}_' + self.v_fam + '/' + tm_str + '/'
             else:
                 path += self.dataset + '/' + 'vi_klpq_' + self.v_fam + '/' + tm_str + '/'
             if not os.path.exists(path): 
@@ -525,28 +530,106 @@ class VI_KLpq:
             begin = datetime.datetime.now()
 
             # --- Get HMC sample ---+
-            out = tfp.mcmc.sample_chain(self.num_samp, self.current_state, 
-                previous_kernel_results=None, kernel=self.hmc_kernel,
-                num_burnin_steps=0, num_steps_between_results=0, 
-                trace_fn=(lambda current_state, kernel_results: kernel_results.is_accepted), 
-                parallel_iterations=1000,
-                return_final_kernel_results=False, seed=None, name=None)
-            results_is_accepted = out[1]
-            out = out[0]
-            if len(out.shape) > 2:
-                out = tf.squeeze(out, axis=0)
-            if len(out.shape) < 2:
-                out = tf.expand_dims(out, axis=0)
-            if self.space == 'eps' or self.space == 'warped':
-                eps = out
-                z = self.bij.forward(eps)
+            if self.cis == 0:
+                out = tfp.mcmc.sample_chain(self.num_samp, self.current_state, 
+                    previous_kernel_results=None, kernel=self.hmc_kernel,
+                    num_burnin_steps=0, num_steps_between_results=0, 
+                    trace_fn=(lambda current_state, kernel_results: kernel_results.is_accepted), 
+                    parallel_iterations=1000,
+                    return_final_kernel_results=False, seed=None, name=None)
+                results_is_accepted = out[1].numpy()
+                out = out[0]
+                if len(out.shape) > 2:
+                    out = tf.squeeze(out, axis=0)
+                if len(out.shape) < 2:
+                    out = tf.expand_dims(out, axis=0)
+                if self.space == 'eps' or self.space == 'warped':
+                    eps = out
+                    z = self.bij.forward(eps)
+                else:
+                    z = out
+                z = tf.stop_gradient(z)
             else:
-                z = out
-            z = tf.stop_gradient(z)
+                S = self.cis
+
+                # Get z for 2, 3, ..., S 
+                z0_Sm1 = tfd.Sample(tfd.Normal(0,1), self.num_dims).sample((S-1) * self.chains)
+                z0_Sm1 = tf.reshape(z0_Sm1, (S-1, self.chains, -1))
+                
+                alphas = tfd.Sample(tfd.Bernoulli(probs=self.bernoulli_prob_corr * tf.ones(1))).sample(self.chains * (S-1))
+                alphas = self.corr_coef * tf.cast(alphas, tf.float32)
+                alphas = tf.reshape(alphas, (S-1, self.chains))
+                alphas = tf.tile(tf.expand_dims(alphas, 2), [1, 1, self.num_dims])
+
+                if self.space == 'eps' or self.space == 'warped':
+                    z0 = self.bij.inverse(self.current_state)
+                else:
+                    z0 = self.current_state
+
+                alpha0 = tfd.Sample(tfd.Bernoulli(self.bernoulli_prob_corr)).sample(self.chains)
+                alpha0 = self.corr_coef * tf.cast(alpha0, tf.float32)
+                alpha0 =  tf.tile(tf.expand_dims(alpha0, 1), [1, self.num_dims])
+
+                xi = alpha0 * z0 + tfd.Sample(tfd.Normal(0,1), self.num_dims).sample(self.chains)
+                xi = tf.tile(tf.expand_dims(xi, 0), [S-1, 1, 1])
+                
+                z0_Sm1 = alphas * xi + z0_Sm1
+                
+                z0_S = tf.concat([tf.reshape(z0, (1, self.chains, -1)), z0_Sm1], axis=0)
+                if self.space == 'eps' or self.space == 'warped':
+                    zt_Sm1 = self.bij.forward(z0_Sm1)
+                else:
+                    zt_Sm1 = z0_Sm1
+                
+                # Concatenate z_Sm1 with z_k-1
+                zt_S = tf.concat([tf.reshape(self.current_state, (1, self.chains, -1)), zt_Sm1], axis=0)
+                
+                if self.space == 'eps' or self.space == 'warped':
+                    zs = tf.reshape(z0_S, (self.chains * S, -1))
+                    log_w = self.log_hmc_target_warped_space(zs)
+                else:
+                    zs = tf.reshape(z0_S, (self.chains * S, -1))
+                    log_w = self.log_hmc_target_original_space(zs)
+
+                # Reshape w into (batch_size, S)
+                log_w = tf.transpose(tf.reshape(log_w, (S, self.chains)))
+                # Sample from categorical (J is batch_size-long vector)
+                J = tf.random.categorical(log_w, 1)
+
+                # Set z[k], or z of this iteration
+                zt_S = tf.reshape(zt_S, (S, -1, self.num_dims))
+
+                J = tf.tile(tf.expand_dims(J, 2), [1, self.num_dims, 1])
+                z = tf.gather_nd(params=tf.reshape(zt_S, (self.chains, -1, S)), indices=J, batch_dims=2)
+                #z0 = tf.gather_nd(params=tf.reshape(z0_S, (self.chains, -1, S)), indices=J, batch_dims=2)
+
+                if self.rejuvenation:
+                    out = tfp.mcmc.sample_chain(self.num_samp, z, 
+                        previous_kernel_results=None, kernel=self.hmc_kernel,
+                        num_burnin_steps=0, num_steps_between_results=0, 
+                        trace_fn=(lambda current_state, kernel_results: kernel_results.is_accepted), 
+                        parallel_iterations=1000,
+                        return_final_kernel_results=False, seed=None, name=None)
+                    results_is_accepted = out[1].numpy()
+                    out = out[0]
+                    if len(out.shape) > 2:
+                        out = tf.squeeze(out, axis=0)
+                    if len(out.shape) < 2:
+                        out = tf.expand_dims(out, axis=0)
+                    # if self.space == 'eps' or self.space == 'warped':
+                    #     eps = out
+                    #     z = self.bij.forward(eps)
+                    # else:
+                    #     z = out
+                    z = out
+                
+                z = tf.stop_gradient(z)
+
+                results_is_accepted = np.array([1.])
             
             params = self.record_data(params)
             hmc_points.append(z.numpy())
-            is_accepted += np.mean(np.squeeze(results_is_accepted.numpy()))
+            is_accepted += np.mean(np.squeeze(results_is_accepted))
             self.is_accepted = is_accepted/(epoch+1)
 
             # --- Training ---+

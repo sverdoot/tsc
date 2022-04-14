@@ -92,6 +92,11 @@ def parse_args():
                        help='Number of samples in conditional importance sampling MSC. If 0, no CIS is used.',
                        type=int,
                        default=0)
+
+    parser.add_argument('--rejuvenation', action='store_true')
+    parser.add_argument('--bernoulli_prob_corr', type=float, default=0.5)
+    parser.add_argument('--corr_coef', type=float, default=0.95)
+
     parser.add_argument('--hmc_e_differs', 
                        help='Training like Hoffman 2017, where each datapoint has its own step size, if True.',
                        default=False, 
@@ -144,6 +149,98 @@ if args.load_path.lower() == 'na':
     load_path = None
 else:
     load_path = args.load_path
+
+if args.dataset == 'survey':
+    cces = pd.read_csv('data/cces_df.csv', index_col=0)
+    cces_all = pd.read_csv('data/cces_all_df.csv', index_col=0)
+    cces_weighted = pd.read_csv('data/cces_weighted_df.csv', index_col=0)
+
+    # Fills in the dictionary so that we know which index corresponds to what state / eth / edu etc.
+    data_to_idx = {}
+    list_of_states_and_votes = []
+    list_of_states = []
+    state = 0
+    age = 50
+    eth = 56
+    educ = 60
+    male_eth = 65
+    educ_age = 73
+    educ_eth = 103
+    for i in range(1, len(cces_all)+1):
+        tup = (cces_all.loc[i,'state'], cces_all.loc[i,'repvote'])
+        if cces_all.loc[i,'state'] not in data_to_idx:
+            data_to_idx[cces_all.loc[i,'state']] = state
+            state += 1
+        if tup not in list_of_states_and_votes:
+            list_of_states_and_votes.append(tup)
+        if cces_all.loc[i,'age'] not in data_to_idx:
+            data_to_idx[cces_all.loc[i,'age']] = age
+            age += 1
+        if cces_all.loc[i,'eth'] not in data_to_idx:
+            data_to_idx[cces_all.loc[i,'eth']] = eth
+            eth += 1
+        if cces_all.loc[i,'educ'] not in data_to_idx:
+            data_to_idx[cces_all.loc[i,'educ']] = educ
+            educ += 1
+    list_of_states_and_votes.sort(key=lambda x:x[1])
+    for tup in list_of_states_and_votes:
+        list_of_states.append(tup[0])
+
+    # Create new representation of data that contains only 0 and 1
+    def transform_raw(cces, data_to_idx, i, 
+                    state=0, age=50, eth=56, educ=60,
+                    male_eth=65, educ_age=73, educ_eth=103):
+        x_i = np.zeros(128)
+        eth_idx = data_to_idx[cces.loc[i,'eth']]
+        age_idx = data_to_idx[cces.loc[i,'age']]
+        educ_idx = data_to_idx[cces.loc[i,'educ']]
+        x_i[data_to_idx[cces.loc[i,'state']]] = 1
+        x_i[age_idx] = 1
+        x_i[eth_idx] = 1
+        x_i[educ_idx] = 1
+        
+        is_male = int(cces.loc[i,'male'] + 0.5)
+        male_eth_idx = male_eth + is_male * 4 + (eth_idx-eth) 
+        educ_age_idx = educ_age + (educ_idx-educ) * 6 + (age_idx-age)
+        educ_eth_idx = educ_eth + (educ_idx-educ) * 4 + (eth_idx-eth)
+        x_i[male_eth_idx] = 1
+        x_i[educ_age_idx] = 1
+        x_i[educ_eth_idx] = 1
+        
+        x_i[123] = is_male
+        x_i[124] = int(cces.loc[i,'region'] == 'South')
+        x_i[125] = int(cces.loc[i,'region'] == 'North Central')
+        x_i[126] = int(cces.loc[i,'region'] == 'West')
+        x_i[127] = cces.loc[i,'repvote']
+        
+        return x_i
+
+    x = []
+    y = []
+    for i in range(1, len(cces)+1):
+        x_i = transform_raw(cces, data_to_idx, i)
+        
+        x.append(x_i)
+        y.append(cces.loc[i,'abortion'])
+
+    x = np.array(x, dtype=np.float32)
+    y = np.array(y, dtype=np.float32)
+
+    if args.method.lower() == 'vi_klpq':
+        model = models.VI_KLpq(
+            v_fam='gaussian', 
+            space=args.space, 
+            dataset='survey', 
+            hmc_e=args.hmc_e, 
+            hmc_L=args.hmc_L, 
+            chains=1,
+            cis=args.cis,
+            bernoulli_prob_corr=args.bernoulli_prob_corr,
+            corr_coef=args.corr_coef,
+            rejuvenation=args.rejuvenation)
+        model.x = x
+        model.y = y
+        model.train(lr=args.lr, epochs=int(1e4))
 
 if args.method.lower() == 'vi_klqp':
     model = models.VI_KLqp(
