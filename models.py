@@ -7,13 +7,13 @@ import tensorflow.keras as tfk
 import tensorflow.keras.layers as tfkl
 import datetime
 import os
+from pathlib import Path
 import pickle
 
 from util import *
 from dist import *
 
 tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
-
 
 
 class VI_KLqp:
@@ -492,7 +492,7 @@ class VI_KLpq:
             tm = str(datetime.datetime.now())
             tm_str = tm[:10]+'-'+tm[11:13]+tm[14:16]+tm[17:19]
             if path is None:
-                path = 'results/' + self.dataset + '/' + f'vi_klpq_N{self.cis}_{self.space}' + self.v_fam + '/' + tm_str + '/'
+                path = 'results/' + self.dataset + '/' + f'vi_klpq_N{self.cis}_{self.space}_{self.v_fam}' + '/' + tm_str + '/'
             else:
                 path += self.dataset + '/' + 'vi_klpq_' + self.v_fam + '/' + tm_str + '/'
             if not os.path.exists(path): 
@@ -682,7 +682,7 @@ class VI_KLpq:
             end = datetime.datetime.now()
 
             # --- Print and save results ---+    
-            if epoch % 1 == 0:
+            if epoch % 100 == 0:
                 print(end-begin)
                 if self.dataset == 'funnel' or self.dataset == 'banana':
                     if self.v_fam == 'iaf' or self.v_fam == 'flow':
