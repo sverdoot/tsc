@@ -450,9 +450,19 @@ class VI_KLpq:
         if self.dataset == 'funnel' or self.dataset == 'banana':
             return 0, -logqz_x # Just KL(pq)
         elif self.dataset == 'survey':
-            return -tf.reduce_sum((self.likelihood(z) - self.prior(z)) * weights), -logqz_x     
+            return -tf.reduce_sum((self.likelihood(z) + self.prior(z)) * weights), -logqz_x     
         else:
-            raise KeyError      
+            raise KeyError
+
+        # if self.v_fam == 'iaf' or self.v_fam == 'flow':
+        #     z0 = self.bij.inverse(z)
+        #     logqz_x = tf.reduce_mean(log_normal_pdf(z0, 0., 0.) - self.bij.forward_log_det_jacobian(z0, 1))
+        # elif self.v_fam == 'gaussian':
+        #     logqz_x = tf.reduce_mean(log_normal_pdf(z, self.phi_m, 2 * tf.math.log(self.phi_s)))
+        # if self.dataset == 'funnel' or self.dataset == 'banana':
+        #     return 0, -logqz_x # Just KL(pq)
+        # elif self.dataset == 'survey':
+        #     return -tf.reduce_mean(self.likelihood(z)) - tf.reduce_mean(self.prior(z)), -logqz_x      
     
     def make_model(self):
         x_in = tfkl.Input(shape=(self.num_dims,), dtype=tf.float32) # eps
