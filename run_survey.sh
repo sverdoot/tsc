@@ -38,8 +38,8 @@ python main.py --dataset=survey \
     --hmc_e=0.05 \
     --hmc_L=20 \
     --cis=10 \
-    --corr_coef=1.0 \
-    --bernoulli_prob_corr=1.0 \
+    --corr_coef=0.0 \
+    --bernoulli_prob_corr=0.0 \
     --rejuvenation \
     --rao_blackwell
 
