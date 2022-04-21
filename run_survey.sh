@@ -4,15 +4,27 @@
 
 
 #VI_pq HMC, gaussian var family
-python main.py --dataset=survey \
-    --method=vi_klpq \
-    --v_fam=gaussian \
-    --space=warped \
-    --epochs=10000 \
-    --lr=0.01 \
-    --hmc_e=0.05 \
-    --hmc_L=20 \
-    --cis=0
+
+# python main.py --dataset=survey \
+#     --method=vi_klpq \
+#     --v_fam=gaussian \
+#     --space=warped \
+#     --epochs=10000 \
+#     --lr=0.01 \
+#     --hmc_e=0.05 \
+#     --hmc_L=20 \
+#     --cis=1 \
+#     --rejuvenation
+
+# python main.py --dataset=survey \
+#     --method=vi_klpq \
+#     --v_fam=gaussian \
+#     --space=warped \
+#     --epochs=10000 \
+#     --lr=0.01 \
+#     --hmc_e=0.05 \
+#     --hmc_L=20 \
+#     --cis=0
 
 # # VI_pq Ex2MCMC (HMC), gaussian var family
 # python main.py --dataset=survey \
@@ -37,7 +49,21 @@ python main.py --dataset=survey \
     --lr=0.01 \
     --hmc_e=0.05 \
     --hmc_L=20 \
-    --cis=10 \
+    --cis=20 \
+    --corr_coef=0.0 \
+    --bernoulli_prob_corr=0.0 \
+    --rejuvenation
+
+# VI_pq Ex2MCMC (HMC), gaussian var family, HMC in warped space
+python main.py --dataset=survey \
+    --method=vi_klpq \
+    --v_fam=gaussian \
+    --space=warped \
+    --epochs=10000 \
+    --lr=0.01 \
+    --hmc_e=0.05 \
+    --hmc_L=20 \
+    --cis=20 \
     --corr_coef=0.0 \
     --bernoulli_prob_corr=0.0 \
     --rejuvenation \

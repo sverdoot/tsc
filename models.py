@@ -524,12 +524,13 @@ class VI_KLpq:
         if save:
             tm = str(datetime.datetime.now())
             tm_str = tm[:10]+'-'+tm[11:13]+tm[14:16]+tm[17:19]
+            sub_path = Path(self.dataset, f'vi_klpq_N{self.cis}_{self.space}_{self.v_fam}' + ('_rao' if self.rao_blackwell else ''), tm_str)
             if path is None:
-                path = Path('results', self.dataset, f'vi_klpq_N{self.cis}_{self.space}_{self.v_fam}', tm_str)
+                path = Path('results', sub_path)
             else:
-                path += Path(path, self.dataset, f'vi_klpq_N{self.cis}_{self.space}_{self.v_fam}',  tm_str)
-            if self.rao_blackwell:
-                path = Path(path.parent, f'{path.name}_rao')
+                path += Path(path,sub_path)
+            # if self.rao_blackwell:
+            #     path = Path(path.parent, f'{path.name}_rao')
 
             path.mkdir(exist_ok=True, parents=True)
             path = path.as_posix() + '/'
@@ -584,13 +585,6 @@ class VI_KLpq:
                 
                 z0_Sm1 = alphas * xi + (1. - alphas**2) ** .5 * z0_Sm1
                 z0_S = tf.concat([tf.reshape(z0, (1, self.chains, -1)), z0_Sm1], axis=0)
-                # if self.space == 'eps' or self.space == 'warped':
-                #     zt_Sm1 = self.bij.forward(z0_Sm1)
-                # else:
-                #     zt_Sm1 = z0_Sm1
-                # Concatenate z_Sm1 with z_k-1
-                #zt_S = tf.concat([tf.reshape(z, (1, self.chains, -1)), zt_Sm1], axis=0)
-                #zt_S_flat = tf.reshape(zt_S, (self.chains * self.cis, -1))
 
                 z0_S_flat = tf.reshape(z0_S, (self.chains * self.cis, -1))
                 if self.space == 'eps' or self.space == 'warped':
