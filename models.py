@@ -405,7 +405,7 @@ class VI_KLpq:
             prior_lpdf = prior_lpdf + priors
         return prior_lpdf 
     
-    def log_hmc_target_warped_space(self, eps: tf.Tensor) -> Tuple[tf.Tensor, Any]:
+    def log_hmc_target_warped_space(self, eps: tf.Tensor) -> Tuple[tf.Tensor, Any, tf.Tensor]:
         # Unnormalized density p(epsilon | data)
         if self.dataset == 'funnel' or self.dataset == 'banana':
             z = self.bij.forward(eps)
@@ -413,12 +413,12 @@ class VI_KLpq:
             part1 = self.likelihood(z)
             part2 = self.bij.forward_log_det_jacobian(eps, 1)
             # part2 = tf.reduce_sum(tf.math.log(self.phi_s))
-            return part1 + part2, part2
+            return part1 + part2, part2, z
         elif self.dataset == 'survey':
             z = self.bij.forward(eps)
             part1 = self.likelihood(z) + self.prior(z)
             part2 = self.bij.forward_log_det_jacobian(eps, 1)
-            return part1 + part2, part2
+            return part1 + part2, part2, z
         else:
             raise KeyError
     
@@ -525,12 +525,14 @@ class VI_KLpq:
             tm = str(datetime.datetime.now())
             tm_str = tm[:10]+'-'+tm[11:13]+tm[14:16]+tm[17:19]
             if path is None:
-                path = 'results/' + self.dataset + '/' + f'vi_klpq_N{self.cis}_{self.space}_{self.v_fam}' + '/' + tm_str + '/'
+                path = Path('results', self.dataset, f'vi_klpq_N{self.cis}_{self.space}_{self.v_fam}', tm_str)
             else:
-                path += self.dataset + '/' + 'vi_klpq_' + self.v_fam + '/' + tm_str + '/'
-            if not os.path.exists(path): 
-                os.makedirs(path)
-                os.makedirs(path+'30000/')
+                path += Path(path, self.dataset, f'vi_klpq_N{self.cis}_{self.space}_{self.v_fam}',  tm_str)
+            if self.rao_blackwell:
+                path = Path(path.parent, f'{path.name}_rao')
+
+            path.mkdir(exist_ok=True, parents=True)
+            path = path.as_posix() + '/'
 
         if load_path is not None and self.dataset == 'survey':
             gamma_0 = list(np.genfromtxt(load_path+'gamma_0.csv', dtype='float32'))
@@ -561,30 +563,10 @@ class VI_KLpq:
         begin = datetime.datetime.now()
         for epoch in range(load_epoch, epochs+1):
             # --- Get sample ---+
-            if self.cis == 0: # TSC
-                out = tfp.mcmc.sample_chain(self.num_samp, self.current_state, 
-                    previous_kernel_results=None, kernel=self.hmc_kernel,
-                    num_burnin_steps=0, num_steps_between_results=0, 
-                    trace_fn=(lambda current_state, kernel_results: kernel_results.is_accepted), 
-                    parallel_iterations=1000,
-                    return_final_kernel_results=False, seed=None, name=None)
-                results_is_accepted = out[1].numpy()
-                out = out[0]
-                if len(out.shape) > 2:
-                    out = tf.squeeze(out, axis=0)
-                if len(out.shape) < 2:
-                    out = tf.expand_dims(out, axis=0)
-                if self.space == 'eps' or self.space == 'warped':
-                    eps = out
-                    z = self.bij.forward(eps)
-                else:
-                    z = out
-                z = tf.stop_gradient(z)
-            
-            else: # Ex2MCMC
+            if self.cis > 0: # Ex2MCMC
                 z0_Sm1 = tfd.Sample(tfd.Normal(0,1), self.num_dims).sample((self.cis - 1) * self.chains)
                 z0_Sm1 = tf.reshape(z0_Sm1, (self.cis - 1, self.chains, -1))
-                
+
                 alphas = tfd.Sample(
                     tfd.Bernoulli(probs=self.bernoulli_prob_corr * tf.ones(1))
                     ).sample(self.chains * (self.cis - 1))
@@ -593,12 +575,7 @@ class VI_KLpq:
                 alphas = tf.tile(tf.expand_dims(alphas, 2), [1, 1, self.num_dims])
 
                 z0 = self.current_state
-                if self.space == 'eps' or self.space == 'warped':
-                    z = self.bij.forward(self.current_state)
-                else:
-                    z = self.current_state
-
-                alpha0 = tfd.Sample(tfd.Bernoulli(self.bernoulli_prob_corr)).sample(self.chains)
+                alpha0 = tfd.Sample(tfd.Bernoulli(probs=self.bernoulli_prob_corr)).sample(self.chains)
                 alpha0 = self.corr_coef * tf.cast(alpha0, tf.float32)
                 alpha0 =  tf.tile(tf.expand_dims(alpha0, 1), [1, self.num_dims])
                 noise = tfd.Sample(tfd.Normal(0,1), self.num_dims).sample(self.chains)
@@ -607,20 +584,25 @@ class VI_KLpq:
                 
                 z0_Sm1 = alphas * xi + (1. - alphas**2) ** .5 * z0_Sm1
                 z0_S = tf.concat([tf.reshape(z0, (1, self.chains, -1)), z0_Sm1], axis=0)
-                if self.space == 'eps' or self.space == 'warped':
-                    zt_Sm1 = self.bij.forward(z0_Sm1)
-                else:
-                    zt_Sm1 = z0_Sm1
-                
+                # if self.space == 'eps' or self.space == 'warped':
+                #     zt_Sm1 = self.bij.forward(z0_Sm1)
+                # else:
+                #     zt_Sm1 = z0_Sm1
                 # Concatenate z_Sm1 with z_k-1
-                zt_S = tf.concat([tf.reshape(z, (1, self.chains, -1)), zt_Sm1], axis=0)
-                zt_S_flat = tf.reshape(zt_S, (self.chains * self.cis, -1))
+                #zt_S = tf.concat([tf.reshape(z, (1, self.chains, -1)), zt_Sm1], axis=0)
+                #zt_S_flat = tf.reshape(zt_S, (self.chains * self.cis, -1))
+
+                z0_S_flat = tf.reshape(z0_S, (self.chains * self.cis, -1))
                 if self.space == 'eps' or self.space == 'warped':
-                    log_w_flat, log_jacs = self.log_hmc_target_warped_space(zt_S_flat)
+                    log_w_flat, log_jacs, zt_S_flat = self.log_hmc_target_warped_space(z0_S_flat)
                 else:
-                    log_w_flat, log_jacs = self.log_hmc_target_original_space(zt_S_flat)
+                    log_w_flat, log_jacs = self.log_hmc_target_original_space(z0_S_flat)
+                    zt_S_flat = z0_S_flat
+                zt_S = tf.reshape(zt_S_flat, (self.cis, self.chains, -1))
 
                 log_w = tf.transpose(tf.reshape(log_w_flat, (self.cis, self.chains)))
+                if tf.rank(log_jacs) > 0:
+                    log_jacs = tf.transpose(tf.reshape(log_jacs, (self.cis, self.chains)))
                 # Sample from categorical (J is batch_size-long vector)
                 J = tf.random.categorical(log_w, 1)
 
@@ -634,35 +616,38 @@ class VI_KLpq:
                         hmc_input = z0
                     else:
                         hmc_input = z
-                    out = tfp.mcmc.sample_chain(self.num_samp, hmc_input, 
-                        previous_kernel_results=None, kernel=self.hmc_kernel,
-                        num_burnin_steps=0, num_steps_between_results=0, 
-                        trace_fn=(lambda current_state, kernel_results: kernel_results.is_accepted), 
-                        parallel_iterations=1000,
-                        return_final_kernel_results=False, seed=None, name=None)
-                    results_is_accepted = out[1].numpy()
-                    out = out[0]
-                    if len(out.shape) > 2:
-                        out = tf.squeeze(out, axis=0)
-                    if len(out.shape) < 2:
-                        out = tf.expand_dims(out, axis=0)
-                    if self.space == 'warped':
-                        eps = out
-                        z = self.bij.forward(eps)
-                    else:
-                        z = out
-                else:
-                    results_is_accepted = np.array([1.])
-                z = tf.stop_gradient(z)
+            else:
+                hmc_input = self.current_state
 
-            
+            if self.cis == 0 or self.rejuvenation:
+                hmc_input = tf.stop_gradient(hmc_input)
+                out = tfp.mcmc.sample_chain(self.num_samp, hmc_input, 
+                    previous_kernel_results=None, kernel=self.hmc_kernel,
+                    num_burnin_steps=0, num_steps_between_results=0, 
+                    trace_fn=(lambda current_state, kernel_results: kernel_results.is_accepted), 
+                    parallel_iterations=1000,
+                    return_final_kernel_results=False, seed=None, name=None)
+                results_is_accepted = out[1].numpy()
+                out = out[0]
+                if len(out.shape) > 2:
+                    out = tf.squeeze(out, axis=0)
+                if len(out.shape) < 2:
+                    out = tf.expand_dims(out, axis=0)
+                if self.space == 'warped':
+                    eps = out
+                    z = self.bij.forward(eps)
+                else:
+                    z = out
+            else:
+                results_is_accepted = np.array([1.])
+            z = tf.stop_gradient(z)
+
             params = self.record_data(params)
             hmc_points.append(z.numpy())
             is_accepted += np.mean(np.squeeze(results_is_accepted))
-            self.is_accepted = is_accepted/(epoch+1)
+            self.is_accepted = is_accepted / (epoch+1)
 
             # --- Training ---+
-            # z_in = tf.gather(z, [self.num_samp-1])
             if self.cis > 0 and self.rao_blackwell: #Ex2MCMC, Rao-Blackwellized
                 zt_S_flat = tf.stop_gradient(zt_S_flat)
                 z_in = zt_S_flat

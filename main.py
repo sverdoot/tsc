@@ -95,8 +95,8 @@ def parse_args():
                        default=0)
 
     parser.add_argument('--rejuvenation', action='store_true')
-    parser.add_argument('--bernoulli_prob_corr', type=float, default=0.5)
-    parser.add_argument('--corr_coef', type=float, default=0.95)
+    parser.add_argument('--bernoulli_prob_corr', type=float, default=0)
+    parser.add_argument('--corr_coef', type=float, default=0)
     parser.add_argument('--rao_blackwell', action="store_true")
 
     parser.add_argument('--hmc_e_differs', 
@@ -135,7 +135,7 @@ def parse_args():
     parser.add_argument('--random_seed',
                        help='Random seed.',
                        type=int,
-                       default=0)
+                       default=42)
     args = parser.parse_args()
     return args
 
