@@ -9,6 +9,7 @@ import datetime
 import os
 from pathlib import Path
 import pickle
+from typing import Callable, Optional, Tuple, Union, Any
 
 from util import *
 from dist import *
@@ -259,11 +260,26 @@ class VI_KLqp:
 
 class VI_KLpq:
 
-    def __init__(self, dataset='funnel', v_fam='gaussian', space='eps', num_dims=2, 
-                 num_samp=1, chains=1, hmc_e=0.25, hmc_L=4, 
-                 batch_size=5000, train_size=5000, 
-                 pt_init=tf.constant([[2,10]], dtype=tf.float32), 
-                 loc_init=[2.,5.], scale_init=[1.,1.], cis=0, corr_coef=0.95, bernoulli_prob_corr=0.5, rejuvenation=False):
+    def __init__(self, 
+            dataset='funnel', 
+            v_fam='gaussian', 
+            space='eps', 
+            num_dims:int = 2, 
+            num_samp: int = 1, 
+            chains: int = 1, 
+            hmc_e: float = 0.25, 
+            hmc_L: int = 4, 
+            batch_size: int = 5000, 
+            train_size: int = 5000, 
+            pt_init: tf.Tensor = tf.constant([[2,10]], 
+            dtype=tf.float32), 
+            loc_init: Tuple = [2.,5.], 
+            scale_init: Tuple = [1.,1.], 
+            cis: int = 0, 
+            corr_coef: float = 0., 
+            bernoulli_prob_corr: float = 0., 
+            rejuvenation: bool = False,
+            rao_blackwell: bool = False):
         self.space = space.lower()
         self.v_fam = v_fam.lower()
         self.dataset = dataset.lower()
@@ -290,6 +306,7 @@ class VI_KLpq:
         self.corr_coef = corr_coef
         self.bernoulli_prob_corr = bernoulli_prob_corr
         self.rejuvenation = rejuvenation
+        self.rao_blackwell = rao_blackwell
         
         self.likelihood = self.define_likelihood()
         self.prior = self.define_prior()
@@ -337,7 +354,7 @@ class VI_KLpq:
                     shift=self.phi_m,
                     scale_diag=self.phi_s)
 
-    def define_likelihood(self):
+    def define_likelihood(self) -> Callable:
         if self.dataset == 'funnel':
             return Funnel().get_dist().log_prob
         elif self.dataset == 'banana':
@@ -348,7 +365,7 @@ class VI_KLpq:
             self.gamma = tf.Variable(tf.zeros(5), name='gamma')
             return self.survey_likelihood_lpdf
 
-    def define_prior(self):
+    def define_prior(self) -> Union[Callable, Any]:
         if self.dataset == 'funnel' or self.dataset == 'banana':
             return None
         elif self.dataset == 'survey':
@@ -357,15 +374,15 @@ class VI_KLpq:
                 name='sigma')
             return self.survey_prior_lpdf
         
-    def define_log_hmc_target(self):
+    def define_log_hmc_target(self) -> Callable:
         if self.space == 'eps' or self.space == 'warped':
             self.current_state = self.bij.inverse(self.pt_init)
-            return self.log_hmc_target_warped_space
+            return lambda x: self.log_hmc_target_warped_space(x)[0]
         else:
             self.current_state = self.pt_init
-            return self.log_hmc_target_original_space
+            return lambda x: self.log_hmc_target_original_space(x)[0]
         
-    def survey_likelihood_lpdf(self, alpha):
+    def survey_likelihood_lpdf(self, alpha: tf.Tensor) -> tf.Tensor:
         splitted_x = tf.split(self.x, [123, 5], axis=1)
         term1 = tf.matmul(splitted_x[0], tf.transpose(alpha)) # has shape (batch_size, chains)
         term2 = self.gamma_0 # is scaler
@@ -376,7 +393,7 @@ class VI_KLpq:
             labels=tf.tile(tf.expand_dims(self.y, axis=1), [1, alpha.shape[0]]))
         return tf.reduce_sum(likelihoods, axis=0)
     
-    def survey_prior_lpdf(self, alpha):
+    def survey_prior_lpdf(self, alpha: tf.Tensor) -> tf.Tensor:
         # alpha must be chains-by-123
         splitted_alpha = tf.split(alpha, [50, 6, 4, 5, 8, 30, 20], axis=1)
         prior_lpdf = 0.
@@ -388,7 +405,7 @@ class VI_KLpq:
             prior_lpdf = prior_lpdf + priors
         return prior_lpdf 
     
-    def log_hmc_target_warped_space(self, eps):
+    def log_hmc_target_warped_space(self, eps: tf.Tensor) -> Tuple[tf.Tensor, Any]:
         # Unnormalized density p(epsilon | data)
         if self.dataset == 'funnel' or self.dataset == 'banana':
             z = self.bij.forward(eps)
@@ -396,30 +413,46 @@ class VI_KLpq:
             part1 = self.likelihood(z)
             part2 = self.bij.forward_log_det_jacobian(eps, 1)
             # part2 = tf.reduce_sum(tf.math.log(self.phi_s))
-            return part1 + part2
+            return part1 + part2, part2
         elif self.dataset == 'survey':
             z = self.bij.forward(eps)
             part1 = self.likelihood(z) + self.prior(z)
             part2 = self.bij.forward_log_det_jacobian(eps, 1)
-            return part1 + part2
+            return part1 + part2, part2
+        else:
+            raise KeyError
     
-    def log_hmc_target_original_space(self, z):
+    def log_hmc_target_original_space(self, z) -> Tuple[tf.Tensor, Any]:
         # Unnormalized density p(z | data)
         if self.dataset == 'funnel' or self.dataset == 'banana':
-            return self.likelihood(z)
+            return self.likelihood(z), None
         elif self.dataset == 'survey':
-            return self.likelihood(z) + self.prior(z)
+            return self.likelihood(z) + self.prior(z), None
+        else:
+            raise KeyError
     
-    def loss(self, z): 
+    def loss(self, z: tf.Tensor, weights: Optional[tf.Tensor] = None) -> Tuple[Any, tf.Tensor]: 
+        if tf.rank(z) != 2:
+            raise Exception
+        if weights is None:
+            weights = tf.ones(z.shape[0]) / float(tf.shape(z)[0])
+        if weights.shape != z.shape[:1]:
+            raise Exception
+
         if self.v_fam == 'iaf' or self.v_fam == 'flow':
             z0 = self.bij.inverse(z)
-            logqz_x = tf.reduce_mean(log_normal_pdf(z0, 0., 0.) - self.bij.forward_log_det_jacobian(z0, 1))
+            logqz_x = tf.reduce_sum((log_normal_pdf(z0, 0., 0.) - self.bij.forward_log_det_jacobian(z0, 1)) * weights)
         elif self.v_fam == 'gaussian':
-            logqz_x = tf.reduce_mean(log_normal_pdf(z, self.phi_m, 2 * tf.math.log(self.phi_s)))
+            logqz_x = tf.reduce_sum((log_normal_pdf(z, self.phi_m, 2 * tf.math.log(self.phi_s))) * weights)
+        else:
+            raise KeyError
+
         if self.dataset == 'funnel' or self.dataset == 'banana':
             return 0, -logqz_x # Just KL(pq)
         elif self.dataset == 'survey':
-            return -tf.reduce_mean(self.likelihood(z)) - tf.reduce_mean(self.prior(z)), -logqz_x           
+            return -tf.reduce_sum((self.likelihood(z) - self.prior(z)) * weights), -logqz_x     
+        else:
+            raise KeyError      
     
     def make_model(self):
         x_in = tfkl.Input(shape=(self.num_dims,), dtype=tf.float32) # eps
@@ -525,12 +558,10 @@ class VI_KLpq:
             else:
                 self.current_state = np.genfromtxt(load_path+'hmc_points.csv')
 
+        begin = datetime.datetime.now()
         for epoch in range(load_epoch, epochs+1):
-
-            begin = datetime.datetime.now()
-
-            # --- Get HMC sample ---+
-            if self.cis == 0:
+            # --- Get sample ---+
+            if self.cis == 0: # TSC
                 out = tfp.mcmc.sample_chain(self.num_samp, self.current_state, 
                     previous_kernel_results=None, kernel=self.hmc_kernel,
                     num_burnin_steps=0, num_steps_between_results=0, 
@@ -550,18 +581,15 @@ class VI_KLpq:
                     z = out
                 z = tf.stop_gradient(z)
             
-            else:
-                S = self.cis
-
-                # Get z for 2, 3, ..., S 
-                z0_Sm1 = tfd.Sample(tfd.Normal(0,1), self.num_dims).sample((S-1) * self.chains)
-                z0_Sm1 = tf.reshape(z0_Sm1, (S-1, self.chains, -1))
+            else: # Ex2MCMC
+                z0_Sm1 = tfd.Sample(tfd.Normal(0,1), self.num_dims).sample((self.cis - 1) * self.chains)
+                z0_Sm1 = tf.reshape(z0_Sm1, (self.cis - 1, self.chains, -1))
                 
                 alphas = tfd.Sample(
                     tfd.Bernoulli(probs=self.bernoulli_prob_corr * tf.ones(1))
-                    ).sample(self.chains * (S-1))
+                    ).sample(self.chains * (self.cis - 1))
                 alphas = self.corr_coef * tf.cast(alphas, tf.float32)
-                alphas = tf.reshape(alphas, (S-1, self.chains))
+                alphas = tf.reshape(alphas, (self.cis - 1, self.chains))
                 alphas = tf.tile(tf.expand_dims(alphas, 2), [1, 1, self.num_dims])
 
                 z0 = self.current_state
@@ -575,7 +603,7 @@ class VI_KLpq:
                 alpha0 =  tf.tile(tf.expand_dims(alpha0, 1), [1, self.num_dims])
                 noise = tfd.Sample(tfd.Normal(0,1), self.num_dims).sample(self.chains)
                 xi = alpha0 * z0 + (1. - alpha0**2) ** .5 * noise
-                xi = tf.tile(tf.expand_dims(xi, 0), [S-1, 1, 1])
+                xi = tf.tile(tf.expand_dims(xi, 0), [self.cis - 1, 1, 1])
                 
                 z0_Sm1 = alphas * xi + (1. - alphas**2) ** .5 * z0_Sm1
                 z0_S = tf.concat([tf.reshape(z0, (1, self.chains, -1)), z0_Sm1], axis=0)
@@ -586,15 +614,13 @@ class VI_KLpq:
                 
                 # Concatenate z_Sm1 with z_k-1
                 zt_S = tf.concat([tf.reshape(z, (1, self.chains, -1)), zt_Sm1], axis=0)
+                zt_S_flat = tf.reshape(zt_S, (self.chains * self.cis, -1))
                 if self.space == 'eps' or self.space == 'warped':
-                    zs = tf.reshape(z0_S, (self.chains * S, -1))
-                    log_w = self.log_hmc_target_warped_space(zs)
+                    log_w_flat, log_jacs = self.log_hmc_target_warped_space(zt_S_flat)
                 else:
-                    zs = tf.reshape(z0_S, (self.chains * S, -1))
-                    log_w = self.log_hmc_target_original_space(zs)
+                    log_w_flat, log_jacs = self.log_hmc_target_original_space(zt_S_flat)
 
-                # Reshape w into (batch_size, S)
-                log_w = tf.transpose(tf.reshape(log_w, (S, self.chains)))
+                log_w = tf.transpose(tf.reshape(log_w_flat, (self.cis, self.chains)))
                 # Sample from categorical (J is batch_size-long vector)
                 J = tf.random.categorical(log_w, 1)
 
@@ -625,10 +651,10 @@ class VI_KLpq:
                         z = self.bij.forward(eps)
                     else:
                         z = out
-                
+                else:
+                    results_is_accepted = np.array([1.])
                 z = tf.stop_gradient(z)
 
-                results_is_accepted = np.array([1.])
             
             params = self.record_data(params)
             hmc_points.append(z.numpy())
@@ -637,11 +663,19 @@ class VI_KLpq:
 
             # --- Training ---+
             # z_in = tf.gather(z, [self.num_samp-1])
-            z_in = z 
+            if self.cis > 0 and self.rao_blackwell: #Ex2MCMC, Rao-Blackwellized
+                zt_S_flat = tf.stop_gradient(zt_S_flat)
+                z_in = zt_S_flat
+                weights = tf.reshape(
+                    tf.nn.softmax(tf.transpose(log_w - log_jacs), axis=0) / log_w.shape[0], 
+                    self.chains * self.cis)
+                weights = tf.stop_gradient(weights)
+            else:    
+                z_in = z
+                weights = None
 
             with tf.GradientTape(persistent=True) as tape:
-                
-                loss_p, loss_q = self.loss(z_in)
+                loss_p, loss_q = self.loss(z_in, weights)
                 loss_value = loss_p + loss_q
                 
             if self.dataset == 'survey' and (self.v_fam == 'iaf' or self.v_fam == 'flow'):
@@ -661,7 +695,6 @@ class VI_KLpq:
                     grads = tf.split(grads, [self.num_dims, self.num_dims])
 
                 optimizer.apply_gradients(zip(grads, self.trainable_var))
-
             del tape
 
             losses.append(loss_value.numpy())
@@ -674,7 +707,7 @@ class VI_KLpq:
                         scale_diag=self.phi_s)
                 self.current_state = self.bij.inverse(z)
             else:
-                self.current_state = z
+                self.current_state = z 
 
             if epoch > 10000 and self.dataset == 'survey':
                 self.reset_hmc_kernel()
@@ -683,7 +716,7 @@ class VI_KLpq:
 
             # --- Print and save results ---+    
             if epoch % 100 == 0:
-                print(end-begin)
+                print(f'Time: {end-begin}\n')
                 if self.dataset == 'funnel' or self.dataset == 'banana':
                     if self.v_fam == 'iaf' or self.v_fam == 'flow':
                         print('Epoch', epoch, 
