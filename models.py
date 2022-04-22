@@ -518,6 +518,8 @@ class VI_KLpq:
         params = [phi_m, phi_s, gamma_0, gamma, sigma]
         params_savenames = ['phi_m.csv', 'phi_s.csv', 'gamma_0.csv', 'gamma.csv', 'sigma.csv']
         losses = []
+        losses_q = []
+        losses_p = []
         hmc_points = [] # record points directly from HMC, not passed to transport map
         posterior_stds = [] # record posterior stds (approx) in flow, to monitor convergence
         is_accepted = 0
@@ -592,6 +594,7 @@ class VI_KLpq:
                 else:
                     log_w_flat, log_jacs = self.log_hmc_target_original_space(z0_S_flat)
                     zt_S_flat = z0_S_flat
+                log_w_flat -= log_normal_pdf(z0_S_flat, 0., 0.)
                 zt_S = tf.reshape(zt_S_flat, (self.cis, self.chains, -1))
 
                 log_w = tf.transpose(tf.reshape(log_w_flat, (self.cis, self.chains)))
@@ -677,6 +680,8 @@ class VI_KLpq:
             del tape
 
             losses.append(loss_value.numpy())
+            losses_p.append(loss_p.numpy())
+            losses_q.append(loss_q.numpy())
             
             # --- Update current state for hmc kernel ---+
             if self.space == 'eps' or self.space == 'warped':
@@ -736,8 +741,10 @@ class VI_KLpq:
                     if epoch == epochs:
                         model_agg = combine_nn_params(self.model, path, 100)
                         model_agg.save_weights(path + 'models/model_agg/model')
-            if (epoch % 10000 == 0 or epoch == 1) and save:
+            if (epoch % 1000 == 0 or epoch == 1) and save:
                 np.savetxt(path+'losses.csv', np.array(losses))
+                np.savetxt(path+'losses_p.csv', np.array(losses_p))
+                np.savetxt(path+'losses_q.csv', np.array(losses_q))
                 with open(path+'hmc_points.pickle', 'wb') as handle:
                     pickle.dump(hmc_points, handle, protocol=pickle.HIGHEST_PROTOCOL)
                 if self.v_fam == 'iaf' or self.v_fam == 'flow':

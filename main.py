@@ -155,7 +155,7 @@ def main(args):
     if args.dataset == 'survey':
         cces = pd.read_csv('data/cces_df.csv', index_col=0)
         cces_all = pd.read_csv('data/cces_all_df.csv', index_col=0)
-        cces_weighted = pd.read_csv('data/cces_weighted_df.csv', index_col=0)
+        # cces_weighted = pd.read_csv('data/cces_weighted_df.csv', index_col=0)
 
         # Fills in the dictionary so that we know which index corresponds to what state / eth / edu etc.
         data_to_idx = {}
@@ -165,9 +165,9 @@ def main(args):
         age = 50
         eth = 56
         educ = 60
-        male_eth = 65
-        educ_age = 73
-        educ_eth = 103
+        # male_eth = 65
+        # educ_age = 73
+        # educ_eth = 103
         for i in range(1, len(cces_all)+1):
             tup = (cces_all.loc[i,'state'], cces_all.loc[i,'repvote'])
             if cces_all.loc[i,'state'] not in data_to_idx:
