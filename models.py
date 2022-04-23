@@ -566,6 +566,7 @@ class VI_KLpq:
         begin = datetime.datetime.now()
         for epoch in range(load_epoch, epochs+1):
             # --- Get sample ---+
+            changed_particle = 0
             if self.cis > 0: # Ex2MCMC
                 z0_Sm1 = tfd.Sample(tfd.Normal(0,1), self.num_dims).sample((self.cis - 1) * self.chains)
                 z0_Sm1 = tf.reshape(z0_Sm1, (self.cis - 1, self.chains, -1))
@@ -594,14 +595,22 @@ class VI_KLpq:
                 else:
                     log_w_flat, log_jacs = self.log_hmc_target_original_space(z0_S_flat)
                     zt_S_flat = z0_S_flat
+                # print('q', log_normal_pdf(z0_S_flat, 0., 0.))
+                # print('p', log_w_flat - log_jacs)
                 log_w_flat -= log_normal_pdf(z0_S_flat, 0., 0.)
                 zt_S = tf.reshape(zt_S_flat, (self.cis, self.chains, -1))
 
                 log_w = tf.transpose(tf.reshape(log_w_flat, (self.cis, self.chains)))
+                log_w -= tf.math.reduce_max(log_w, 1)[:, None]
                 if tf.rank(log_jacs) > 0:
                     log_jacs = tf.transpose(tf.reshape(log_jacs, (self.cis, self.chains)))
                 # Sample from categorical (J is batch_size-long vector)
                 J = tf.random.categorical(log_w, 1)
+                # print(log_w)
+                # print(tf.nn.softmax(log_w, 1))
+                # print(J[0, 0])
+                chng = tf.math.count_nonzero(J) / J.shape[0]
+                changed_particle = (epoch * changed_particle + chng) / (epoch + 1)
 
                 # Set z[k], or z of this iteration
                 J = tf.tile(tf.expand_dims(J, 2), [1, self.num_dims, 1])
@@ -648,8 +657,10 @@ class VI_KLpq:
             if self.cis > 0 and self.rao_blackwell: #Ex2MCMC, Rao-Blackwellized
                 zt_S_flat = tf.stop_gradient(zt_S_flat)
                 z_in = zt_S_flat
+                #log_w = log_w - log_jacs
+                log_w -= tf.math.maximum(log_w, 1)[:, None]
                 weights = tf.reshape(
-                    tf.nn.softmax(tf.transpose(log_w - log_jacs), axis=0) / log_w.shape[0], 
+                    tf.nn.softmax(tf.transpose(log_w), axis=0) / log_w.shape[0], 
                     self.chains * self.cis)
                 weights = tf.stop_gradient(weights)
             else:    
@@ -693,8 +704,10 @@ class VI_KLpq:
             else:
                 self.current_state = z 
 
-            if epoch > 10000 and self.dataset == 'survey':
-                self.reset_hmc_kernel()
+            # if epoch > 10000 and self.dataset == 'survey':
+            #     self.reset_hmc_kernel()
+            if epoch > 1000 and self.dataset == 'survey':
+                    self.reset_hmc_kernel()
 
             end = datetime.datetime.now()
 
@@ -727,6 +740,9 @@ class VI_KLpq:
                               'gamma', np.round(self.gamma.numpy(),3),
                               'phi_s', np.round(np.mean(self.phi_s.numpy()),3),
                               'hmc_e', np.round(self.hmc_e, 3))
+                if self.cis > 0:
+                    print(f'Fraction of times particle changed: {changed_particle}')
+                    
             if epoch % 100 == 0:
                 # Monitor convergence for flow-based distributions:
                 if self.v_fam == 'iaf' or self.v_fam == 'flow':
